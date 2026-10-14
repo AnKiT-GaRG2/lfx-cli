@@ -8,6 +8,10 @@ BINARY_NAME=lfx
 CMD_DIR=./cmd/lfx
 BUILD_DIR=./bin
 
+# Run MegaLinter locally via Docker (matches CI Go flavor at v10.1.0).
+# Keep this digest in sync with .github/workflows/mega-linter.yml.
+MEGALINTER_IMAGE := ghcr.io/oxsecurity/megalinter-go@sha256:42e091a4bcbe9141fe420c2520ed7addf75ae60a0c9d42e3df1278eef1c90a88  # v10.1.0
+
 # Build flags. Version is not injected via -ldflags: `go build` already
 # embeds a pseudo-version (encoding the VCS revision, commit time, and
 # dirty state) into the binary's module version, which main.go reads via
@@ -104,11 +108,9 @@ install-tools:
 		*) echo "Warning: $$gobin is not in your PATH; installed tools (golangci-lint, revive) won't be found. Add it to your PATH, e.g.: export PATH=\"$$PATH:$$gobin\"" ;; \
 	esac
 
-# Run MegaLinter locally via Docker (matches CI Go flavor at v9.6.0).
-# Keep this version in sync with .github/workflows/mega-linter.yml.
 megalinter:
-	docker pull ghcr.io/oxsecurity/megalinter-go:v9.6.0
-	docker run --rm --platform linux/amd64 -v '$(CURDIR):/tmp/lint:rw' ghcr.io/oxsecurity/megalinter-go:v9.6.0
+	docker pull $(MEGALINTER_IMAGE)
+	docker run --rm --platform linux/amd64 -e GOTOOLCHAIN=auto -v '$(CURDIR):/tmp/lint:rw' $(MEGALINTER_IMAGE)
 
 # Show help
 help:
