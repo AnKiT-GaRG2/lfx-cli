@@ -236,44 +236,8 @@ release binaries may be missing even though the GitHub Release exists.
    keep dependencies current. This upgrades module dependencies only, not the
    Go toolchain itself (`go.mod`'s `go` directive) -- see the toolchain policy
    below before touching that.
-4. **Go toolchain version**: Freely bump `go.mod`'s `go` directive to the
-   latest available *patch* release (e.g. `1.X.Y` → `1.X.{Y+1}`) to pick up
-   security fixes. Do **not** bump the *minor* version (e.g. `1.X.x` →
-   `1.{X+1}.x`) unless the user explicitly asks for it, **and** you've
-   validated it against the Go version MegaLinter itself bundles --
-   MegaLinter runs several linters (e.g. `golangci-lint`) against its own
-   bundled Go version, and a `go.mod` directive newer than that bundled
-   version breaks those checks.
-
-   To find MegaLinter's bundled Go version:
-
-   ```bash
-   # 1. Find the MegaLinter flavor and pinned version tag used in CI.
-   grep -A1 'oxsecurity/megalinter' .github/workflows/*.yml
-   # e.g. "uses: oxsecurity/megalinter/flavors/<flavor>@<sha>  # <tag>"
-
-   # 2. Fetch that flavor's Dockerfile and read its GO_ALPINE_VERSION (or
-   #    GO_IMAGE_VERSION) build arg.
-   curl -s "https://raw.githubusercontent.com/oxsecurity/megalinter/<tag>/flavors/<flavor>/Dockerfile" \
-     | grep -i 'GO_ALPINE_VERSION\|GO_IMAGE_VERSION'
-   ```
-
-   `go.mod`'s `go` directive must never exceed that bundled version. Staying
-   one minor version behind it (rather than matching its minor *and* patch
-   exactly) leaves room to always take the latest patch release for security
-   fixes without ever being blocked by MegaLinter's own bundled patch version
-   lagging behind a newly disclosed vulnerability.
-
-   There's no built-in `go` subcommand to look up the latest patch release
-   for a given minor version -- query the official `go.dev/dl` JSON feed
-   instead:
-
-   ```bash
-   # Find the latest patch release for the minor version pinned in go.mod.
-   MINOR=$(grep '^go ' go.mod | awk '{print $2}' | cut -d. -f1,2)
-   curl -s "https://go.dev/dl/?mode=json&include=all" \
-     | jq -r --arg m "go${MINOR}." '.[].version | select(startswith($m))' \
-     | sort -V | tail -1
-   ```
+4. **Go toolchain version**: Follow the `lfx-megalinter` skill's Go version
+   policy. It sets `go.mod` to the latest patch of the previous stable Go
+   minor and caps it at the minor bundled by the pinned MegaLinter release.
 5. **Code Quality**: Run `make check` before commits
 6. **Documentation**: Update README.md for user-facing changes
