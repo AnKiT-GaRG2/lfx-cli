@@ -2,6 +2,18 @@
 # SPDX-License-Identifier: MIT
 ---
 GITHUB_COMMENT_REPORTER: false
+# The image's bundled Go can lag security patches. Select and download the
+# checksum-verified toolchain from go.mod before any linters run, for both
+# GitHub Actions and local MegaLinter runs. Propagate it to linter subprocesses.
+PRE_COMMANDS:
+  - command: |-
+      set -eu
+      export GOTOOLCHAIN="go$(awk '$1 == "go" { print $2; exit }' go.mod)"
+      go version
+    cwd: workspace
+    continue_if_failed: false
+    output_variables:
+      - GOTOOLCHAIN
 DISABLE_LINTERS:
   # Prefer Revive.
   - GO_GOLANGCI_LINT

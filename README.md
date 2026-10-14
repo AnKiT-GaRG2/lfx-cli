@@ -83,6 +83,10 @@ Run `lfx --help` or `lfx <command> --help` for full details on any command.
 
 ## Development
 
+Use Go 1.26.9 or newer (see `go.mod`). Build and release workflows read this
+version from `go.mod`; MegaLinter also selects and downloads that toolchain
+before linting, so local MegaLinter runs require network access on first use.
+
 ```bash
 make build   # Build ./bin/lfx
 make check   # Format, vet, and lint

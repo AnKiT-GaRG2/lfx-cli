@@ -240,10 +240,11 @@ release binaries may be missing even though the GitHub Release exists.
    latest available *patch* release (e.g. `1.X.Y` → `1.X.{Y+1}`) to pick up
    security fixes. Do **not** bump the *minor* version (e.g. `1.X.x` →
    `1.{X+1}.x`) unless the user explicitly asks for it, **and** you've
-   validated it against the Go version MegaLinter itself bundles --
-   MegaLinter runs several linters (e.g. `golangci-lint`) against its own
-   bundled Go version, and a `go.mod` directive newer than that bundled
-   version breaks those checks.
+   validated it against the effective Go runtime and Go-based linters used
+   by MegaLinter. `.mega-linter.yml` selects `GOTOOLCHAIN` from `go.mod` in a
+   fail-closed pre-command, downloads it with Go's checksum verification,
+   and propagates it to linter subprocesses. This keeps CI and local
+   MegaLinter runs on the patched runtime even when the image lags behind.
 
    To find MegaLinter's bundled Go version:
 
@@ -258,11 +259,14 @@ release binaries may be missing even though the GitHub Release exists.
      | grep -i 'GO_ALPINE_VERSION\|GO_IMAGE_VERSION'
    ```
 
-   `go.mod`'s `go` directive must never exceed that bundled version. Staying
-   one minor version behind it (rather than matching its minor *and* patch
-   exactly) leaves room to always take the latest patch release for security
-   fixes without ever being blocked by MegaLinter's own bundled patch version
-   lagging behind a newly disclosed vulnerability.
+   The bundled version is only the bootstrap runtime; the effective runtime
+   must meet `go.mod`'s requirement. Go-based linters also have their own
+   build-toolchain constraints, so upgrading the runtime alone does not
+   guarantee linter compatibility. `GO_GOLANGCI_LINT` is currently disabled
+   in MegaLinter; validate its build-toolchain compatibility before enabling
+   it. Keep the pinned Revive compatible and verify the full MegaLinter run
+   when upgrading Go. Do not keep an unsupported Go minor version solely
+   to stay behind the image's bundled runtime.
 
    There's no built-in `go` subcommand to look up the latest patch release
    for a given minor version -- query the official `go.dev/dl` JSON feed
