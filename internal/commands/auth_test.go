@@ -4,15 +4,126 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/linuxfoundation/lfx-cli/internal/credstore"
 	"github.com/urfave/cli/v3"
+	"golang.org/x/oauth2"
 )
+
+func TestValidateBrowserURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		uri   string
+		valid bool
+	}{
+		{name: "HTTPS", uri: "https://example.test/activate", valid: true},
+		{name: "complete URI", uri: "https://example.test/activate?user_code=ABCD-EFGH", valid: true},
+		{name: "port and fragment", uri: "https://example.test:8443/activate#code", valid: true},
+		{name: "IPv6", uri: "https://[::1]/activate", valid: true},
+		{name: "empty"},
+		{name: "HTTP", uri: "http://example.test/activate"},
+		{name: "UNC", uri: `\\example.test\share\update.exe`},
+		{name: "Windows path", uri: `C:\Temp\update.exe`},
+		{name: "local path", uri: "/Applications/Example.app"},
+		{name: "file", uri: "file:///Applications/Example.app"},
+		{name: "remote file", uri: "file://example.test/share/update.exe"},
+		{name: "custom scheme", uri: "ms-msdt:/id Example"},
+		{name: "javascript", uri: "javascript:alert(1)"},
+		{name: "relative", uri: "/activate"},
+		{name: "protocol relative", uri: "//example.test/activate"},
+		{name: "missing host", uri: "https:///activate"},
+		{name: "empty hostname", uri: "https://:443/activate"},
+		{name: "opaque", uri: "https:example.test/activate"},
+		{name: "launcher option", uri: "--help"},
+		{name: "leading whitespace", uri: " https://example.test/activate"},
+		{name: "invalid escape", uri: "https://example.test/%zz"},
+		{name: "backslash host", uri: `https://example.test\share\update.exe`},
+		{name: "terminal escape", uri: "https://example.test/\x1b[31m"},
+		{name: "newline", uri: "https://example.test/\nforged output"},
+		{name: "Unicode control", uri: "https://example.test/\u009b31m"},
+	}
+
+	// No launcher is available: a rejected URI must produce the validation
+	// error, not an exec error, proving the guard runs before process startup.
+	t.Setenv("PATH", t.TempDir())
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateBrowserURL(tc.uri)
+			if tc.valid {
+				if err != nil {
+					t.Fatalf("validateBrowserURL(%q): %v", tc.uri, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateBrowserURL(%q): expected rejection", tc.uri)
+			}
+			if launchErr := openBrowser(tc.uri); launchErr == nil || launchErr.Error() != err.Error() {
+				t.Fatalf("openBrowser(%q) = %v, want validation error %v", tc.uri, launchErr, err)
+			}
+		})
+	}
+}
+
+func TestPrintDeviceCodeInstructionsRejectsUnsafeURIs(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	for _, uri := range []string{
+		`\\example.test\share\update.exe`,
+		"file:///Applications/Example.app",
+		"ms-msdt:/id Example",
+		"https://example.test/\x1b[31m\nforged output",
+	} {
+		for _, complete := range []bool{false, true} {
+			t.Run(strconv.FormatBool(complete)+"/"+uri, func(t *testing.T) {
+				resp := &oauth2.DeviceAuthResponse{
+					UserCode:        "ABCD-EFGH",
+					VerificationURI: uri,
+				}
+				if complete {
+					resp.VerificationURI = "https://example.test/activate"
+					resp.VerificationURIComplete = uri
+				}
+				var output bytes.Buffer
+				if err := printDeviceCodeInstructions(&output, resp, true); err != nil {
+					t.Fatalf("printDeviceCodeInstructions: %v", err)
+				}
+				got := output.String()
+				if !strings.Contains(got, "refusing to open verification URI") {
+					t.Fatalf("missing browser refusal: %q", got)
+				}
+				if !strings.Contains(got, "Please visit: "+terminalSafeText(uri)+"\n") {
+					t.Fatalf("missing manual instructions: %q", got)
+				}
+				if strings.Contains(got, "\x1b") || strings.Contains(got, "\nforged output") {
+					t.Fatalf("unsafe terminal output: %q", got)
+				}
+			})
+		}
+	}
+}
+
+func TestPrintDeviceCodeInstructionsManual(t *testing.T) {
+	resp := &oauth2.DeviceAuthResponse{
+		UserCode:        "ABCD-EFGH\x1b[31m",
+		VerificationURI: "https://example.test/activate",
+	}
+	var output bytes.Buffer
+	if err := printDeviceCodeInstructions(&output, resp, false); err != nil {
+		t.Fatalf("printDeviceCodeInstructions: %v", err)
+	}
+	want := "First copy your one-time code: \"ABCD-EFGH\\x1b[31m\"\nThen visit: https://example.test/activate\n"
+	if got := output.String(); got != want {
+		t.Fatalf("instructions = %q, want %q", got, want)
+	}
+}
 
 // newTestCommand builds a *cli.Command with the --insecure-storage and
 // --backend flags registered (as the root `lfx` command does via
