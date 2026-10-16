@@ -12,11 +12,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/linuxfoundation/lfx-cli/internal/credstore"
 	"github.com/urfave/cli/v3"
@@ -217,22 +220,8 @@ func loginWithDeviceCode(
 		return fmt.Errorf("request device code: %w", err)
 	}
 
-	fmt.Printf("First copy your one-time code: %s\n", resp.UserCode)
-	// VerificationURIComplete is optional per RFC 8628 §3.2; fall back to
-	// VerificationURI (always present) plus the user code if the IdP
-	// doesn't supply it.
-	verificationURI := resp.VerificationURIComplete
-	if verificationURI == "" {
-		verificationURI = resp.VerificationURI
-	}
-	if cmd.Bool(webFlagName) {
-		fmt.Printf("Opening %s in your browser...\n", verificationURI)
-		if err := openBrowser(verificationURI); err != nil {
-			fmt.Printf("Couldn't open browser automatically: %v\n", err)
-			fmt.Printf("Please visit: %s\n", verificationURI)
-		}
-	} else {
-		fmt.Printf("Then visit: %s\n", verificationURI)
+	if err := printDeviceCodeInstructions(os.Stdout, resp, cmd.Bool(webFlagName)); err != nil {
+		return fmt.Errorf("display login instructions: %w", err)
 	}
 	fmt.Println("Waiting for authentication...")
 
@@ -758,15 +747,68 @@ func base64URLDecode(s string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(s)
 }
 
-// openBrowser opens url in the user's default browser, following the
-// per-OS conventions used by tools like `gh`.
-func openBrowser(url string) error {
+// printDeviceCodeInstructions displays untrusted IdP fields safely, retaining
+// manual instructions when automatic browser opening is refused or fails.
+func printDeviceCodeInstructions(w io.Writer, resp *oauth2.DeviceAuthResponse, web bool) error {
+	if _, err := fmt.Fprintf(w, "First copy your one-time code: %s\n", terminalSafeText(resp.UserCode)); err != nil {
+		return err
+	}
+	// VerificationURIComplete is optional per RFC 8628 §3.2.
+	verificationURI := resp.VerificationURIComplete
+	if verificationURI == "" {
+		verificationURI = resp.VerificationURI
+	}
+	displayURI := terminalSafeText(verificationURI)
+	if web {
+		if _, err := fmt.Fprintf(w, "Opening %s in your browser...\n", displayURI); err != nil {
+			return err
+		}
+		if err := openBrowser(verificationURI); err != nil {
+			if _, writeErr := fmt.Fprintf(w, "Couldn't open browser automatically: %v\n", err); writeErr != nil {
+				return writeErr
+			}
+			_, writeErr := fmt.Fprintf(w, "Please visit: %s\n", displayURI)
+			return writeErr
+		}
+	} else {
+		_, err := fmt.Fprintf(w, "Then visit: %s\n", displayURI)
+		return err
+	}
+	return nil
+}
+
+// terminalSafeText escapes control characters rather than letting IdP-supplied
+// values execute terminal escape sequences or forge additional output lines.
+func terminalSafeText(s string) string {
+	if strings.ContainsFunc(s, unicode.IsControl) {
+		return strconv.QuoteToASCII(s)
+	}
+	return s
+}
+
+// validateBrowserURL restricts OS launchers to absolute HTTPS URLs. These
+// launchers also accept local files and custom schemes, so exec.Command alone
+// is not sufficient to make an untrusted verification URI safe to launch.
+func validateBrowserURL(uri string) error {
+	u, err := url.Parse(uri)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Opaque != "" || strings.ContainsFunc(uri, unicode.IsControl) {
+		return errors.New("refusing to open verification URI: expected an absolute HTTPS URL with a hostname")
+	}
+	return nil
+}
+
+// openBrowser opens a validated HTTPS URL in the user's default browser,
+// following the per-OS conventions used by tools like `gh`.
+func openBrowser(uri string) error {
+	if err := validateBrowserURL(uri); err != nil {
+		return err
+	}
 	switch runtime.GOOS {
 	case "darwin":
-		return exec.Command("open", url).Start()
+		return exec.Command("open", uri).Start()
 	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", uri).Start()
 	default:
-		return exec.Command("xdg-open", url).Start()
+		return exec.Command("xdg-open", uri).Start()
 	}
 }
