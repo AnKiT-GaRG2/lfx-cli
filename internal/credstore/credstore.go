@@ -26,8 +26,8 @@
 // acceptable, and is deliberately less secure than the keyring-backed
 // storage.
 //
-// Non-sensitive state (environment, IdP domain, and audience used at login)
-// is always stored as plain JSON under the XDG state directory
+// Non-sensitive state (environment and IdP domain used at login) is
+// always stored as plain JSON under the XDG state directory
 // (~/.local/state/lfx-cli/ by default), per XDG Base Directory conventions
 // for mutable runtime state.
 package credstore
@@ -175,7 +175,7 @@ func (c Credentials) ValidAccessToken() bool {
 
 // DeviceState holds non-sensitive information persisted between CLI
 // invocations so that commands like `lfx auth token` don't need to
-// re-specify the environment, IdP domain, or audience used at login.
+// re-specify the environment or IdP domain used at login.
 //
 // Note: this deliberately does not include a persistent "device ID". One
 // was considered on the assumption that `gh` uses one as part of its
@@ -193,15 +193,6 @@ type DeviceState struct {
 	// development), determining which compiled-in client ID is used to
 	// refresh the access token.
 	Environment string `json:"environment,omitempty"`
-	// Audience is the `--audience` value used at login. Auth0's
-	// refresh_token grant automatically ties the refreshed access token
-	// to the audience it was originally issued for, so this isn't sent
-	// back on refresh; it's persisted for display in `lfx auth status`
-	// and so `lfx api` can refuse a login whose audience differs from
-	// its environment's compiled-in default. Like the rest of state.json
-	// it is unauthenticated, so it must never on its own choose which
-	// host receives a bearer token.
-	Audience string `json:"audience,omitempty"`
 	// Insecure records whether `--insecure-storage` was passed at login,
 	// i.e. whether Credentials live in the plain-file backend rather than
 	// the system keychain. state.json itself is not namespaced by

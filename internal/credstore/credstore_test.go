@@ -83,7 +83,6 @@ func TestDeviceStateRoundTrip(t *testing.T) {
 	want := DeviceState{
 		IDPDomain:   "linuxfoundation-dev.auth0.com",
 		Environment: "development",
-		Audience:    "https://example.test/",
 		Insecure:    true,
 	}
 	if err := store.SaveDeviceState(want); err != nil {

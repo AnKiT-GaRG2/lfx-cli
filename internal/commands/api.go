@@ -29,7 +29,6 @@ const (
 	apiFieldFlagName    = "field"
 	apiRawFieldFlagName = "raw-field"
 	apiQueryFlagName    = "query"
-	apiHostnameFlagName = "hostname"
 )
 
 // apiAllowedMethods enumerates the HTTP methods `lfx api` accepts via
@@ -89,10 +88,6 @@ func NewAPICommand() *cli.Command {
 				Aliases: []string{"q"},
 				Usage:   "Filter the response body through a gjson expression before output",
 			},
-			&cli.StringFlag{
-				Name:  apiHostnameFlagName,
-				Usage: "Override the LFX API base URL (advanced; independent of the IdP domain). Requires a development-environment login ('lfx auth login --env=development').",
-			},
 		},
 		Action: runAPI,
 	}
@@ -120,37 +115,14 @@ func runAPI(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("invalid --%s %q (must be one of GET, POST, PUT, DELETE)", apiMethodFlagName, method)
 	}
 
-	token, audience, env, err := resolveAccessToken(ctx, cmd)
+	token, env, err := resolveAccessToken(ctx, cmd)
 	if err != nil {
 		return err
 	}
 
-	baseURL := cmd.String(apiHostnameFlagName)
-	if cmd.IsSet(apiHostnameFlagName) {
-		if baseURL == "" {
-			return errors.New("--hostname was set to an empty value; omit the flag to use the login environment's default API instead")
-		}
-		// --hostname sends the live bearer token to whatever host is
-		// named. The purpose of this restriction is to keep a prod or
-		// staging token -- the ones with real authority -- from being
-		// redirected to a third-party host at all; --hostname's actual
-		// use case (pointing at a local mock server or alternate
-		// deployment for advanced troubleshooting) only comes up in
-		// development anyway. Allowing it there is also independently
-		// safe: OAuth2 resource servers validate a token's issuer
-		// (`iss`), not just its audience, against the specific IdP(s)
-		// they trust, so even in the hypothetical where a development
-		// login held a token claiming the prod audience, prod would
-		// still reject it as issued by an untrusted IdP.
-		if env != envDevelopment {
-			return fmt.Errorf("--%s requires a development-environment login (run `lfx auth login --%s=%s`); the current login's environment is %q", apiHostnameFlagName, envFlagName, envDevelopment, env)
-		}
-	}
-	if baseURL == "" {
-		baseURL, err = apiDefaultBaseURL(audience, env)
-		if err != nil {
-			return err
-		}
+	baseURL, err := defaultAudienceForEnvironment(env)
+	if err != nil {
+		return err
 	}
 	if err := apiRequireHTTPS(baseURL); err != nil {
 		return err
@@ -356,44 +328,14 @@ func coerceFieldValue(value string) any {
 	return value
 }
 
-// apiDefaultBaseURL returns the API base URL to use when --hostname isn't
-// passed: the compiled-in default audience for env (see
-// defaultAudienceForEnvironment), never the persisted login audience
-// as-is. Mirroring loadDeviceStateForBackend's IdP domain check, a stored
-// audience that differs from env's default is refused, so the host that
-// receives the bearer token is only ever chosen by the compiled-in
-// environment table or by an explicit, per-invocation --hostname (subject
-// to its development-only gate). This applies uniformly to every
-// environment, including development. A deliberate non-default `lfx auth
-// login --audience` must therefore be re-confirmed on each call via
-// --hostname (development logins only).
-func apiDefaultBaseURL(audience string, env authEnvironment) (string, error) {
-	expected, err := defaultAudienceForEnvironment(env)
-	if err != nil {
-		return "", err
-	}
-	if audience != expected {
-		hint := ""
-		if env == envDevelopment {
-			hint = fmt.Sprintf(", or pass --%s explicitly to target a non-default API", apiHostnameFlagName)
-		}
-		return "", fmt.Errorf(
-			"stored login audience %q does not match the default audience %q for environment %q; refusing to use it as the API base URL. Run `lfx auth login --%s=%s` again%s",
-			audience, expected, env, envFlagName, env, hint,
-		)
-	}
-	return expected, nil
-}
-
 // apiJoinURL joins base and path into a single URL, ensuring exactly one
 // slash separates them. path is passed through unmodified (aside from a
 // leading-slash trim) rather than parsed/re-escaped: base is already
-// trusted (env's compiled-in default audience via apiDefaultBaseURL, or
-// --hostname, which is gated to development-environment logins in runAPI)
-// and path is meant to be sent verbatim, including its query string,
-// exactly as the caller wrote it -- a URL-parsing round trip risks subtly
-// rewriting it (see the query string and escaped-slash regressions caught
-// in review).
+// trusted (env's compiled-in default audience; see
+// defaultAudienceForEnvironment), and path is meant to be sent verbatim,
+// including its query string, exactly as the caller wrote it -- a
+// URL-parsing round trip risks subtly rewriting it (see the query string
+// and escaped-slash regressions caught in review).
 func apiJoinURL(base, path string) (string, error) {
 	if base == "" {
 		return "", errors.New("empty base URL")
@@ -403,9 +345,8 @@ func apiJoinURL(base, path string) (string, error) {
 
 // apiRequireHTTPS rejects base URLs that would send the bearer token over
 // a non-HTTPS connection, since the request's Authorization header is
-// otherwise transmitted in cleartext. Loopback hosts are exempted, since
-// http:// there is a common and low-risk way to point --hostname at a
-// local mock server for debugging.
+// otherwise transmitted in cleartext. Loopback hosts are exempted as a
+// low-risk allowance for local mock servers during development.
 func apiRequireHTTPS(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -418,5 +359,5 @@ func apiRequireHTTPS(rawURL string) error {
 	case "localhost", "127.0.0.1", "::1":
 		return nil
 	}
-	return fmt.Errorf("refusing to send credentials to non-HTTPS URL %q (use an https:// --hostname, or localhost/127.0.0.1 for local debugging)", rawURL)
+	return fmt.Errorf("refusing to send credentials to non-HTTPS URL %q (use an https:// URL, or localhost/127.0.0.1 for local debugging)", rawURL)
 }
