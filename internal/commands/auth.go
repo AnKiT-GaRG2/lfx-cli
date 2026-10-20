@@ -43,7 +43,6 @@ const (
 	webFlagName       = "web"
 	withTokenFlagName = "with-token"
 	envFlagName       = "env"
-	audienceFlagName  = "audience"
 )
 
 // CredentialStoreFlags are the --insecure-storage and --backend flags
@@ -123,10 +122,6 @@ func newAuthLoginCommand() *cli.Command {
 				Usage: "Target environment; see 'lfx auth environments' for accepted values",
 				Value: string(envProduction),
 			},
-			&cli.StringFlag{
-				Name:  audienceFlagName,
-				Usage: "Auth0 API audience to request tokens for; defaults to --env's audience (see 'lfx auth environments')",
-			},
 		},
 		Action: runAuthLogin,
 	}
@@ -143,21 +138,14 @@ func runAuthLogin(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	audience := cmd.String(audienceFlagName)
-	if !cmd.IsSet(audienceFlagName) {
-		audience, err = defaultAudienceForEnvironment(env)
-		if err != nil {
-			return err
-		}
-	}
 	insecure := cmd.Bool(insecureStorageFlagName)
 	backend := cmd.String(backendFlagName)
 
 	if cmd.Bool(withTokenFlagName) {
-		return loginWithToken(store, env, domain, audience, insecure, backend)
+		return loginWithToken(store, env, domain, insecure, backend)
 	}
 
-	return loginWithDeviceCode(ctx, cmd, domain, clientID, store, env, audience, insecure, backend)
+	return loginWithDeviceCode(ctx, cmd, domain, clientID, store, env, insecure, backend)
 }
 
 // loginWithToken implements `--with-token`: it reads a refresh token from
@@ -165,7 +153,7 @@ func runAuthLogin(ctx context.Context, cmd *cli.Command) error {
 // `echo "$REFRESH_TOKEN" | lfx auth login --with-token`. No access token is
 // cached; the next `lfx auth token` call exchanges the refresh token for
 // one.
-func loginWithToken(store credstore.Store, env authEnvironment, domain, audience string, insecure bool, backend string) error {
+func loginWithToken(store credstore.Store, env authEnvironment, domain string, insecure bool, backend string) error {
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -179,7 +167,7 @@ func loginWithToken(store credstore.Store, env authEnvironment, domain, audience
 	if err := persistLogin(
 		store,
 		credstore.Credentials{RefreshToken: refreshToken},
-		credstore.DeviceState{IDPDomain: domain, Environment: string(env), Audience: audience, Insecure: insecure, Backend: backend},
+		credstore.DeviceState{IDPDomain: domain, Environment: string(env), Insecure: insecure, Backend: backend},
 	); err != nil {
 		return err
 	}
@@ -198,10 +186,13 @@ func loginWithDeviceCode(
 	domain, clientID string,
 	store credstore.Store,
 	env authEnvironment,
-	audience string,
 	insecure bool,
 	backend string,
 ) error {
+	audience, err := defaultAudienceForEnvironment(env)
+	if err != nil {
+		return err
+	}
 	cfg := &oauth2.Config{
 		ClientID: clientID,
 		Scopes:   loginScopes,
@@ -211,10 +202,7 @@ func loginWithDeviceCode(
 			AuthStyle:     oauth2.AuthStyleInParams,
 		},
 	}
-	var opts []oauth2.AuthCodeOption
-	if audience != "" {
-		opts = append(opts, oauth2.SetAuthURLParam("audience", audience))
-	}
+	opts := []oauth2.AuthCodeOption{oauth2.SetAuthURLParam("audience", audience)}
 	resp, err := cfg.DeviceAuth(ctx, opts...)
 	if err != nil {
 		return fmt.Errorf("request device code: %w", err)
@@ -268,7 +256,7 @@ func loginWithDeviceCode(
 			AccessToken:       token.AccessToken,
 			AccessTokenExpiry: token.Expiry,
 		},
-		credstore.DeviceState{IDPDomain: domain, Environment: string(env), Audience: audience, Insecure: insecure, Backend: backend},
+		credstore.DeviceState{IDPDomain: domain, Environment: string(env), Insecure: insecure, Backend: backend},
 	); err != nil {
 		return err
 	}
@@ -439,7 +427,7 @@ func newAuthTokenCommand() *cli.Command {
 		Name:  "token",
 		Usage: "Print a valid access token for the LFX platform",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			token, _, _, err := resolveAccessToken(ctx, cmd)
+			token, _, err := resolveAccessToken(ctx, cmd)
 			if err != nil {
 				return err
 			}
@@ -451,19 +439,19 @@ func newAuthTokenCommand() *cli.Command {
 
 // resolveAccessToken returns a valid access token for the current login,
 // refreshing it (and persisting the refreshed credentials) if the cached
-// one is missing or expired. It also returns the audience and login
-// environment recorded at login time, so callers (e.g. `lfx api`) can use
-// the audience as their default API base URL and the environment to gate
-// features like --hostname to non-production logins. Both `lfx auth
-// token` and `lfx api` share this single code path so their refresh,
-// error, and credential-persistence behavior never drifts apart.
-func resolveAccessToken(ctx context.Context, cmd *cli.Command) (token, audience string, env authEnvironment, err error) {
+// one is missing or expired. It also returns the login environment, so
+// callers (e.g. `lfx api`) can compute the environment's compiled-in
+// default audience (see defaultAudienceForEnvironment) themselves, rather
+// than trusting anything persisted in state.json. Both `lfx auth token`
+// and `lfx api` share this single code path so their refresh, error, and
+// credential-persistence behavior never drifts apart.
+func resolveAccessToken(ctx context.Context, cmd *cli.Command) (token string, env authEnvironment, err error) {
 	store, creds, found, err := loadStoredCredentials(cmd)
 	if err != nil {
-		return "", "", "", err
+		return "", "", err
 	}
 	if !found {
-		return "", "", "", errors.New("not logged in; run `lfx auth login` first")
+		return "", "", errors.New("not logged in; run `lfx auth login` first")
 	}
 
 	// Validate the persisted device state (insecure-storage and
@@ -474,15 +462,15 @@ func resolveAccessToken(ctx context.Context, cmd *cli.Command) (token, audience 
 	// pin.
 	state, domain, clientID, err := loadDeviceStateForBackend(store, cmd)
 	if err != nil {
-		return "", "", "", fmt.Errorf("load device state: %w", err)
+		return "", "", fmt.Errorf("load device state: %w", err)
 	}
 
 	if creds.ValidAccessToken() {
-		return creds.AccessToken, state.Audience, normalizeEnvironment(state.Environment), nil
+		return creds.AccessToken, normalizeEnvironment(state.Environment), nil
 	}
 
 	if creds.RefreshToken == "" {
-		return "", "", "", errors.New("no refresh token available; run `lfx auth login` again")
+		return "", "", errors.New("no refresh token available; run `lfx auth login` again")
 	}
 
 	cfg := &oauth2.Config{
@@ -497,10 +485,10 @@ func resolveAccessToken(ctx context.Context, cmd *cli.Command) (token, audience 
 	refreshed, err := cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: creds.RefreshToken}).Token()
 	var retrieveErr *oauth2.RetrieveError
 	if errors.As(err, &retrieveErr) && retrieveErr.ErrorCode == "invalid_grant" {
-		return "", "", "", errors.New("session expired or revoked; run `lfx auth login` to log in again")
+		return "", "", errors.New("session expired or revoked; run `lfx auth login` to log in again")
 	}
 	if err != nil {
-		return "", "", "", fmt.Errorf("refresh access token: %w", err)
+		return "", "", fmt.Errorf("refresh access token: %w", err)
 	}
 
 	refreshToken := refreshed.RefreshToken
@@ -514,10 +502,10 @@ func resolveAccessToken(ctx context.Context, cmd *cli.Command) (token, audience 
 		AccessToken:       refreshed.AccessToken,
 		AccessTokenExpiry: refreshed.Expiry,
 	}); err != nil {
-		return "", "", "", fmt.Errorf("save refreshed credentials: %w", err)
+		return "", "", fmt.Errorf("save refreshed credentials: %w", err)
 	}
 
-	return refreshed.AccessToken, state.Audience, normalizeEnvironment(state.Environment), nil
+	return refreshed.AccessToken, normalizeEnvironment(state.Environment), nil
 }
 
 func newAuthStatusCommand() *cli.Command {
@@ -553,13 +541,14 @@ func newAuthStatusCommand() *cli.Command {
 				)
 			}
 			if state.Environment != "" {
-				fmt.Printf("  %-22s %s\n", "Environment:", normalizeEnvironment(state.Environment))
+				env := normalizeEnvironment(state.Environment)
+				fmt.Printf("  %-22s %s\n", "Environment:", env)
+				if audience, err := defaultAudienceForEnvironment(env); err == nil {
+					fmt.Printf("  %-22s %s\n", "Audience:", audience)
+				}
 			}
 			if state.IDPDomain != "" {
 				fmt.Printf("  %-22s %s\n", "IdP domain:", state.IDPDomain)
-			}
-			if state.Audience != "" {
-				fmt.Printf("  %-22s %s\n", "Audience:", state.Audience)
 			}
 			fmt.Printf("  %-22s %s\n", "Credential backend:", backend)
 			if state.Backend != "" {
