@@ -42,8 +42,6 @@ Manage authentication with the LFX platform
 
 Log in to the LFX platform via the Auth0 Device Code flow
 
-**--audience**="": Auth0 API audience to request tokens for; defaults to --env's audience (see 'lfx auth environments')
-
 **--env**="": Target environment; see 'lfx auth environments' for accepted values (default: "production")
 
 **--help, -h**: show help
@@ -119,8 +117,6 @@ Make an authenticated call to an LFX platform API endpoint
 **--header, -H**="": Add an additional request header as 'key:value' (repeatable)
 
 **--help, -h**: show help
-
-**--hostname**="": Override the LFX API base URL (advanced; independent of the IdP domain). Requires a development-environment login ('lfx auth login --env=development').
 
 **--input**="": Read the request body from a file, or '-' for stdin (Content-Type defaults to application/json for POST/PUT unless overridden with -H)
 
