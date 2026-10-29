@@ -198,7 +198,11 @@ install_completion() {
 		"$dest" completion "$shell_name" >"${work_dir}/completion" 2>/dev/null &&
 		[ -s "${work_dir}/completion" ] &&
 		cp "${work_dir}/completion" "$comp_file" 2>/dev/null; then
-		log "Installed ${shell_name} completion to ${comp_file}"
+		if [ "$shell_name" = "bash" ]; then
+			log "Installed bash completion to ${comp_file} (requires bash-completion v2 to be installed and loaded)"
+		else
+			log "Installed ${shell_name} completion to ${comp_file}"
+		fi
 	else
 		log "note: could not install ${shell_name} completion; run '${BINARY_NAME} completion --help' to set it up manually."
 	fi
